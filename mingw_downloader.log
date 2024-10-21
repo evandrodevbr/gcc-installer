@@ -1,0 +1,20 @@
+2024-10-20 21:49:22,035 - INFO - Fetching available versions
+2024-10-20 21:49:22,038 - DEBUG - Starting new HTTPS connection (1): api.github.com:443
+2024-10-20 21:49:22,328 - DEBUG - https://api.github.com:443 "GET /repos/niXman/mingw-builds-binaries/releases HTTP/11" 200 None
+2024-10-20 21:49:22,336 - INFO - Fetched 98 versions
+2024-10-20 21:49:29,561 - INFO - C:\mingw64\bin already in PATH
+2024-10-20 21:49:32,527 - INFO - Removing existing directory: C:\mingw64
+2024-10-20 21:49:34,279 - INFO - Starting installation of MinGW 14.2.0-rt_v12-rev0
+2024-10-20 21:49:34,279 - INFO - Verifying file: mingw_downloads\x86_64-14.2.0-release-posix-seh-ucrt-rt_v12-rev0.7z
+2024-10-20 21:49:34,280 - INFO - Cleaning temporary directory: mingw_downloads\temp_extract
+2024-10-20 21:49:34,316 - INFO - Extracting to temporary  directory: mingw_downloads\temp_extract
+2024-10-20 21:49:42,654 - INFO - Extraction complete
+2024-10-20 21:49:42,655 - INFO - Moving files to C:\mingw64
+2024-10-20 21:49:42,655 - INFO - Error moving files to C:\mingw64: Destination path 'C:\mingw64\mingw64' already exists
+2024-10-20 21:49:42,655 - INFO - Attempting to copy files instead...
+2024-10-20 21:49:42,655 - INFO - Error during installation: [WinError 183] Cannot create a file when that file already exists: 'C:\\mingw64'
+2024-10-20 21:49:42,655 - INFO - File path: mingw_downloads\x86_64-14.2.0-release-posix-seh-ucrt-rt_v12-rev0.7z
+2024-10-20 21:49:42,655 - INFO - File exists: True
+2024-10-20 21:49:42,656 - INFO - File size: 83831089
+2024-10-20 21:49:42,656 - INFO - Temp directory contents: ['mingw64']
+2024-10-20 21:49:42,656 - INFO - Cleaning temporary directory: mingw_downloads\temp_extract
