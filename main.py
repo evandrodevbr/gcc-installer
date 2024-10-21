@@ -1,3 +1,99 @@
+import sys
+import os
+import subprocess
+import urllib.request
+import importlib
+
+
+def download_file(url, filename):
+    with urllib.request.urlopen(url) as response, open(filename, 'wb') as out_file:
+        data = response.read()
+        out_file.write(data)
+
+
+def install_pip():
+    print("Pip não encontrado. Instalando pip...")
+    get_pip_url = "https://bootstrap.pypa.io/get-pip.py"
+    get_pip_filename = "get-pip.py"
+    
+    try:
+        download_file(get_pip_url, get_pip_filename)
+        subprocess.check_call([sys.executable, get_pip_filename])
+        os.remove(get_pip_filename)
+        print("Pip instalado com sucesso.")
+    except Exception as e:
+        print(f"Erro ao instalar pip: {e}")
+        sys.exit(1)
+
+
+def check_pip():
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "--version"])
+    except subprocess.CalledProcessError:
+        install_pip()
+
+
+def install_and_import(package):
+    try:
+        if package == 'pywin32':
+            import win32api
+        else:
+            importlib.import_module(package)
+    except ImportError:
+        print(f"{package} não encontrado. Instalando...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+            if package == 'pywin32':
+                import win32api
+            else:
+                globals()[package] = importlib.import_module(package)
+        except subprocess.CalledProcessError:
+            print(f"Erro ao instalar {package}. Por favor, instale manualmente.")
+            sys.exit(1)
+        except ImportError:
+            if package == 'pywin32':
+                print("pywin32 instalado, mas não pode ser importado diretamente. Isso é normal.")
+            else:
+                print(f"Erro: Não foi possível importar {package} após a instalação.")
+                sys.exit(1)
+
+
+def verify_installation(module_name):
+    try:
+        importlib.import_module(module_name)
+        print(f"{module_name} instalado com sucesso.")
+    except ImportError:
+        print(f"Erro: {module_name} não foi instalado corretamente.")
+        sys.exit(1)
+
+
+print("Verificando se o pip está instalado...")
+check_pip()
+
+print("Instalando e verificando dependências...")
+dependencies = [
+    'requests',
+    'tqdm',
+    'watchdog',
+    'pywin32'
+]
+
+for dep in dependencies:
+    install_and_import(dep)
+
+# Verificar explicitamente os módulos do pywin32
+pywin32_modules = ['win32gui', 'win32con']
+for module in pywin32_modules:
+    try:
+        globals()[module] = importlib.import_module(module)
+        print(f"{module} importado com sucesso.")
+    except ImportError:
+        print(f"Erro: Não foi possível importar {module}. Verifique se pywin32 está instalado corretamente.")
+        sys.exit(1)
+
+print("Todas as dependências foram instaladas e verificadas com sucesso.")
+
+# Agora podemos importar os módulos necessários
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import requests
@@ -6,7 +102,6 @@ import logging
 from tqdm import tqdm
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-import subprocess
 import shutil
 import winreg
 import queue

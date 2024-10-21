@@ -1,4 +1,0 @@
-2024-10-20 21:36:34,249 - INFO - Fetching available versions
-2024-10-20 21:36:34,251 - DEBUG - Starting new HTTPS connection (1): api.github.com:443
-2024-10-20 21:36:34,579 - DEBUG - https://api.github.com:443 "GET /repos/niXman/mingw-builds-binaries/releases HTTP/11" 200 None
-2024-10-20 21:36:34,586 - INFO - Fetched 98 versions
