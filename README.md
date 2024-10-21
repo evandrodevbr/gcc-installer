@@ -1,5 +1,9 @@
 # MinGW Downloader and Installer
 
+## Important Note
+
+Before using the auto-installer, please ensure that you have Python installed on your system. The auto-installer requires Python to run.
+
 ## About the Project
 
 The MinGW Downloader and Installer is a Python-based graphical application designed to simplify the process of downloading, installing, and managing different versions of MinGW (Minimalist GNU for Windows). This tool is particularly useful for developers who need a GCC (GNU Compiler Collection) development environment on Windows platforms.
