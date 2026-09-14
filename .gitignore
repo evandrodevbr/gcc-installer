@@ -5,6 +5,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Ruff (linter opcional citado no README)
+.ruff_cache/
+
 # C extensions
 *.so
 
