@@ -3,23 +3,48 @@ import os
 import subprocess
 import urllib.request
 import importlib
-import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
-import requests
 import logging
-from tqdm import tqdm
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 import shutil
-import winreg
 import queue
 from datetime import datetime
 import platform
 import webbrowser
-import win32gui
-import win32con
 import threading
-import functools
+
+try:
+    import tkinter as tk
+    from tkinter import ttk, messagebox, scrolledtext
+except ImportError:
+    # A GUI é Windows-only; no Linux o módulo continua importável para
+    # lint/testes e o app avisa no main() em vez de quebrar no import.
+    tk = ttk = messagebox = scrolledtext = None
+
+try:
+    import requests
+    from tqdm import tqdm
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+except ImportError as exc:
+    print(
+        f"Missing dependency: {exc.name}.\n"
+        f"Install the requirements first: {sys.executable} -m pip install -r requirements.txt"
+    )
+    raise SystemExit(1) from None
+
+# Módulos exclusivos do Windows (winreg é do stdlib; win32gui/win32con vêm do
+# pywin32). O import tolerante evita que o script quebre antes de rodar o
+# bootstrap de dependências, que é quem instala o pywin32 quando falta.
+try:
+    import winreg
+    import win32gui
+    import win32con
+except ImportError:
+    winreg = win32gui = win32con = None
+
+
+# Lista de releases do projeto MinGW-w64 mantido por niXman, usada para montar a
+# tabela de versões disponíveis na GUI.
+GITHUB_RELEASES_API = "https://api.github.com/repos/niXman/mingw-builds-binaries/releases"
 
 
 def download_file(url, filename):
@@ -51,19 +76,20 @@ def check_pip():
 
 
 def install_and_import(package):
+    """Garante que a dependência está instalada e importável.
+
+    Para requests/tqdm/watchdog o import já aconteceu no topo do módulo (o app
+    encerra com mensagem clara se algum faltar); o caso real aqui é o pywin32,
+    que pode ser instalado na primeira execução, no Windows.
+    """
+    module_name = 'win32api' if package == 'pywin32' else package
     try:
-        if package == 'pywin32':
-            import win32api
-        else:
-            importlib.import_module(package)
+        importlib.import_module(module_name)
     except ImportError:
         print(f"{package} não encontrado. Instalando...")
         try:
             subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-            if package == 'pywin32':
-                import win32api
-            else:
-                globals()[package] = importlib.import_module(package)
+            importlib.import_module(module_name)
         except subprocess.CalledProcessError:
             print(f"Erro ao instalar {package}. Por favor, instale manualmente.")
             sys.exit(1)
@@ -84,43 +110,53 @@ def verify_installation(module_name):
         sys.exit(1)
 
 
-print("Verificando se o pip está instalado...")
-check_pip()
+def ensure_dependencies():
+    """Verifica e, quando falta, instala as dependências do aplicativo.
 
-print("Instalando e verificando dependências...")
-dependencies = [
-    'requests',
-    'tqdm',
-    'watchdog',
-    'pywin32'
-]
+    Chamada apenas pelo main() para que importar o módulo (lint, testes) não
+    instale nada nem abra a GUI.
+    """
+    print("Verificando se o pip está instalado...")
+    check_pip()
 
-for dep in dependencies:
-    install_and_import(dep)
+    print("Instalando e verificando dependências...")
+    dependencies = [
+        'requests',
+        'tqdm',
+        'watchdog',
+        'pywin32'
+    ]
 
-# Verificar explicitamente os módulos do pywin32
-pywin32_modules = ['win32gui', 'win32con']
-for module in pywin32_modules:
-    try:
-        globals()[module] = importlib.import_module(module)
-        print(f"{module} importado com sucesso.")
-    except ImportError:
-        print(f"Erro: Não foi possível importar {module}. Verifique se pywin32 está instalado corretamente.")
-        sys.exit(1)
+    for dep in dependencies:
+        install_and_import(dep)
 
-print("Todas as dependências foram instaladas e verificadas com sucesso.")
+    # Verificar explicitamente os módulos do pywin32
+    pywin32_modules = ['win32gui', 'win32con']
+    for module in pywin32_modules:
+        try:
+            globals()[module] = importlib.import_module(module)
+            print(f"{module} importado com sucesso.")
+        except ImportError:
+            print(f"Erro: Não foi possível importar {module}. Verifique se pywin32 está instalado corretamente.")
+            sys.exit(1)
+
+    print("Todas as dependências foram instaladas e verificadas com sucesso.")
 
 
 class MinGWDownloader:
 
     def __init__(self):
-        self.github_api_url = "https://api.github.com/repos/niXman/mingw-builds-binaries/releases"
-        self.download_folder = "mingw_downloads"
+        self.github_api_url = GITHUB_RELEASES_API
+        # Pasta do aplicativo: nos fontes é a pasta do main.py; empacotado
+        # (PyInstaller) é a pasta do executável. Antes o download caía em
+        # os.path.dirname(sys.executable), ou seja, dentro da instalação do
+        # Python, o que dava erro de permissão em instalações de sistema.
+        self.app_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
+        self.download_folder = os.path.join(self.app_dir, "mingw_downloads")
         self.log_queue = queue.Queue()
         self.cached_versions = []
         self.setup_logging()
         self.setup_gui()
-        self.download_folder = os.path.dirname(os.path.abspath(sys.executable))
         self.setup_folder_monitoring()
         self.system_info = self.get_system_info()
 
@@ -128,7 +164,7 @@ class MinGWDownloader:
         logging.basicConfig(
             level=logging.DEBUG,
             format='%(asctime)s - %(levelname)s - %(message)s',
-            filename='mingw_downloader.log',
+            filename=os.path.join(self.app_dir, 'mingw_downloader.log'),
             filemode='w'
         )
         self.logger = logging.getLogger(__name__)
@@ -142,7 +178,12 @@ class MinGWDownloader:
         self.root = tk.Tk()
         self.root.title("evandro.dev.br - G++ Compiler Installer")
         self.root.geometry("800x600")
-        self.root.iconbitmap('evandro.ico')
+        icon_path = os.path.join(self.app_dir, 'evandro.ico')
+        if os.path.exists(icon_path):
+            try:
+                self.root.iconbitmap(icon_path)
+            except tk.TclError:
+                pass  # iconbitmap só funciona no Windows
 
         self.frame = ttk.Frame(self.root, padding="10")
         self.frame.pack(fill=tk.BOTH, expand=True)
@@ -231,7 +272,6 @@ class MinGWDownloader:
             'os': 'win32'
         }
 
-    @functools.lru_cache(maxsize=None)
     def fetch_versions(self):
         self.log_message("Fetching available versions")
         self.tree.delete(*self.tree.get_children())
@@ -285,6 +325,9 @@ class MinGWDownloader:
     def is_downloaded(self, filename):
         return os.path.exists(os.path.join(self.download_folder, filename))
 
+    def find_download_url(self, version, filename):
+        return next((v[4] for v in self.cached_versions if v[0] == version and v[1] == filename), None)
+
     def download_selected(self):
         selected = self.tree.selection()
         if not selected:
@@ -292,20 +335,21 @@ class MinGWDownloader:
             return
 
         version, filename, _, _ = self.tree.item(selected[0])['values']
-        download_url = next((v[4] for v in self.cached_versions if v[0] == version and v[1] == filename), None)
+        download_url = self.find_download_url(version, filename)
 
         if not download_url:
             messagebox.showerror("Error", "Failed to find download URL")
             return
 
-        threading.Thread(target=self._download_file, args=(filename, download_url)).start()
+        threading.Thread(target=self._download_file, args=(filename, download_url), daemon=True).start()
 
     def _download_file(self, filename, download_url):
+        """Baixa o arquivo. Retorna True em caso de sucesso (ou se já existe)."""
         try:
             if self.is_downloaded(filename):
                 self.log_message(f"File {filename} is already downloaded")
                 messagebox.showinfo("Info", f"File {filename} is already downloaded")
-                return
+                return True
 
             self.log_message(f"Starting download of {filename}")
             file_path = os.path.join(self.download_folder, filename)
@@ -330,9 +374,11 @@ class MinGWDownloader:
             self.log_message(f"File size: {os.path.getsize(file_path)} bytes")
             messagebox.showinfo("Success", f"Successfully downloaded {filename}")
             self.root.after(0, self.update_file_status, filename, "Downloaded")
+            return True
         except Exception as e:
             self.log_message(f"Error downloading {filename}: {str(e)}")
             messagebox.showerror("Error", f"Failed to download {filename}: {str(e)}")
+            return False
         finally:
             self.root.after(0, self._reset_progress)
 
@@ -340,6 +386,7 @@ class MinGWDownloader:
         source_file_path = os.path.join(self.download_folder, filename)
         target_dir = r"C:\mingw64"
         temp_dir = r"C:\mingw_temp"
+        c_drive_file_path = None
 
         try:
             self.log_message(f"Starting installation of MinGW {version}")
@@ -390,16 +437,14 @@ class MinGWDownloader:
             messagebox.showinfo("Installation Complete", "MinGW has been successfully installed. You may need to add it to your system PATH.")
         except Exception as e:
             self.log_message(f"Error during installation: {str(e)}")
-            self.log_message(f"File path: {c_drive_file_path}")
-            self.log_message(f"File exists: {os.path.exists(c_drive_file_path)}")
-            self.log_message(f"File size: {os.path.getsize(c_drive_file_path) if os.path.exists(c_drive_file_path) else 'N/A'}")
+            if c_drive_file_path is not None:
+                self.log_message(f"File path: {c_drive_file_path}")
+                self.log_message(f"File exists: {os.path.exists(c_drive_file_path)}")
+                self.log_message(f"File size: {os.path.getsize(c_drive_file_path) if os.path.exists(c_drive_file_path) else 'N/A'}")
             self.log_message(f"Temp directory contents: {os.listdir(temp_dir) if os.path.exists(temp_dir) else 'N/A'}")
             messagebox.showerror("Error", f"Failed to install MinGW: {str(e)}")
         finally:
             self.clean_temp_directory(temp_dir)
-
-    def is_downloaded(self, filename):
-        return os.path.exists(os.path.join(self.download_folder, filename))
 
     def _update_progress(self, value):
         self.progress_bar['value'] = value
@@ -458,7 +503,7 @@ class MinGWDownloader:
 
             self.log_message("GCC and G++ are available")
             messagebox.showinfo("Installation Test", "GCC and G++ are successfully installed and available.")
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, FileNotFoundError):
             self.log_message("GCC or G++ not found. You may need to add MinGW to your system PATH.")
             messagebox.showwarning("Installation Test", "GCC or G++ not found. You may need to add MinGW to your system PATH.")
 
@@ -503,11 +548,27 @@ class MinGWDownloader:
             return
 
         version, filename, status, _ = self.tree.item(selected[0])['values']
+        download_url = self.find_download_url(version, filename)
 
-        if status != "Downloaded":
-            self.download_selected()
+        if status != "Downloaded" and not download_url:
+            messagebox.showerror("Error", "Failed to find download URL")
+            return
 
-        self.install_mingw()
+        # Antes: download_selected() disparava a thread de download e
+        # install_mingw() era chamado logo depois, quando o status ainda era
+        # "Not Downloaded" (o download roda em outra thread), então o botão
+        # sempre respondia "Please download the selected version first".
+        threading.Thread(
+            target=self._download_then_install,
+            args=(version, filename, download_url),
+            daemon=True
+        ).start()
+
+    def _download_then_install(self, version, filename, download_url):
+        if not self.is_downloaded(filename):
+            if not self._download_file(filename, download_url):
+                return
+        self._install_mingw(version, filename)
 
     def filter_treeview(self, event=None):
         query = self.filter_var.get().lower()
@@ -527,9 +588,9 @@ class MinGWDownloader:
                 self.tree.item(item, tags=current_tags)
 
     def treeview_sort_column(self, tv, col, reverse):
-        l = [(tv.set(k, col), k) for k in tv.get_children('')]
-        l.sort(reverse=reverse)
-        for index, (val, k) in enumerate(l):
+        rows = [(tv.set(k, col), k) for k in tv.get_children('')]
+        rows.sort(reverse=reverse)
+        for index, (_val, k) in enumerate(rows):
             tv.move(k, '', index)
         tv.heading(col, command=lambda: self.treeview_sort_column(tv, col, not reverse))
 
@@ -571,9 +632,23 @@ class DownloadFolderHandler(FileSystemEventHandler):
             self.app.root.after(0, self.app.update_file_status, filename, "Not Downloaded")
 
 
+def main():
+    if sys.platform != 'win32':
+        print(
+            "This installer is Windows-only: it installs MinGW-w64 into C:\\mingw64,\n"
+            "edits the Windows PATH via winreg and extracts .7z packages with 7-Zip.\n"
+            "On Linux, use the cross-compiler from your distribution instead\n"
+            "(e.g. sudo pacman -S mingw-w64-gcc)."
+        )
+        return 1
+
+    ensure_dependencies()
+    MinGWDownloader().run()
+    return 0
+
+
 if __name__ == "__main__":
-    downloader = MinGWDownloader()
-    downloader.run()
+    sys.exit(main())
 
 # TODO: Implement internationalization support for multi-language UI
 # TODO: Adicionar suporte à internacionalização para interface em múltiplos idiomas

@@ -1,0 +1,7 @@
+# Dependências de execução (o alvo é Windows: o app instala MinGW-w64 em C:\mingw64).
+requests>=2.25
+tqdm>=4.60
+watchdog>=2.0
+
+# pywin32 só existe no Windows (PATH via winreg, broadcast de WM_SETTINGCHANGE).
+pywin32>=300; sys_platform == "win32"
