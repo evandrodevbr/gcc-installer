@@ -1,89 +1,145 @@
-# MinGW Downloader and Installer
+# gcc-installer
 
-## Important Note
+**GUI installer for MinGW-w64/GCC on Windows: lists the upstream GitHub builds, downloads the `.7z` packages, extracts them to `C:\mingw64` and can add the toolchain to your user PATH.**
 
-Before using the auto-installer, please ensure that you have Python installed on your system. The auto-installer requires Python to run.
+![Python](https://img.shields.io/badge/Python-3.7%2B-3776AB?logo=python&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-## About the Project
+## About
 
-The MinGW Downloader and Installer is a Python-based graphical application designed to simplify the process of downloading, installing, and managing different versions of MinGW (Minimalist GNU for Windows). This tool is particularly useful for developers who need a GCC (GNU Compiler Collection) development environment on Windows platforms.
+Setting up GCC on Windows usually means finding the right MinGW-w64 build for your architecture, downloading a 100+ MB archive and extracting it by hand. This app does that in one window: it reads the release list of [`niXman/mingw-builds-binaries`](https://github.com/niXman/mingw-builds-binaries), marks the builds that match your machine (x86_64/i686, `seh`/`dwarf`, `ucrt`, `posix` thread model), downloads the one you pick and installs it into `C:\mingw64`. It also patches the user PATH so `gcc` and `g++` become available in new terminals, and renames `mingw32-make.exe` to `make.exe`.
 
-## Features
+It is a single-file tkinter application, meant for Windows developers who want a working `gcc`/`g++` in a few clicks.
 
-- List available MinGW versions from GitHub releases
-- Download selected MinGW versions
-- Install MinGW on the system
-- Add MinGW to the system PATH
-- Remove downloaded versions
-- Filter and sort the version list
-- Compatibility checking for system architecture
+## How it works
 
-## Technologies Used
+```
+niXman/mingw-builds-binaries (GitHub Releases API)
+              |
+              |  JSON: tag_name + assets (*.7z)
+              v
+        tkinter GUI  (version table, filter, sort, recommended builds)
+              |
+              |  download (requests + tqdm, progress bar)
+              v
+   mingw_downloads\*.7z  ->  C:\mingw_temp  (extracted with 7-Zip)
+                                   |
+                                   v
+                             C:\mingw64  ->  test: gcc --version / g++ --version
+                                   |
+                                   v
+                    user PATH (HKCU\Environment) via winreg + WM_SETTINGCHANGE
+```
 
-1. **Python**: The main programming language for this project. Python was chosen for its simplicity, readability, and extensive library support, making it ideal for rapid development of cross-platform applications.
+- `fetch_versions()` reads the releases API and fills the table with every `.7z` asset (version, file, status, date).
+- `_download_file()` streams the archive into `mingw_downloads` next to the application (the status column flips to `Downloaded`, also picked up by a `watchdog` observer on that folder).
+- `_install_mingw()` copies the archive to `C:\`, extracts it with 7-Zip into `C:\mingw_temp`, moves the extracted folder to `C:\mingw64`, removes the archive from `C:\` and runs the `mingw32-make.exe` -> `make.exe` rename plus the `gcc`/`g++` check.
+- `add_mingw_to_path()` appends `C:\mingw64\bin` to `HKCU\Environment\Path` and broadcasts `WM_SETTINGCHANGE`.
 
-2. **Tkinter**: Python's standard GUI (Graphical User Interface) library. Tkinter was selected for its ease of use and because it comes pre-installed with Python, eliminating the need for additional dependencies.
+## Stack
 
-3. **Requests**: A popular HTTP library for Python. It's used in this project to make API calls to GitHub and download MinGW files. Requests was chosen for its intuitive design and robust feature set.
-
-4. **Watchdog**: A Python API and shell utilities to monitor file system events. In this project, it's used to monitor changes in the download directory. Watchdog was selected for its cross-platform support and ease of integration.
-
-5. **Subprocess**: A module that allows you to spawn new processes, connect to their input/output/error pipes, and obtain their return codes. It's used here to execute system commands, particularly for testing the MinGW installation.
-
-6. **Threading**: Python's built-in threading module is used to implement asynchronous operations, improving the responsiveness of the GUI during long-running tasks like downloads and installations.
-
-7. **Logging**: Python's logging module is used for tracking events that happen when the software runs. It was chosen to provide better debugging capabilities and to keep a record of the application's activities.
-
-8. **Winreg**: A Windows-specific module used to access the Windows registry. It's utilized in this project to modify the system PATH, allowing for easy integration of MinGW into the user's development environment.
+| Layer | Choice |
+|---|---|
+| Language | Python 3.7+ (no package layout, single `main.py`) |
+| GUI | tkinter / ttk (stdlib) |
+| HTTP | `requests` (GitHub API + downloads) |
+| Progress | `tqdm` |
+| File watching | `watchdog` (observer on the download folder) |
+| Windows integration | `winreg` (stdlib), `pywin32` (`win32gui`/`win32con`) |
+| Packaging | none, runs from source (works next to a PyInstaller executable too) |
 
 ## Requirements
 
-- Python 3.6 or higher
-- 7-Zip installed in the default path (C:\Program Files\7-Zip\7z.exe)
+- Windows (the app writes to `C:\mingw64`, uses the registry and `pywin32`)
+- Python 3.7 or newer. The old README said 3.6, but `subprocess.run(..., text=True)` requires 3.7
+- 7-Zip installed at the default location: `C:\Program Files\7-Zip\7z.exe` (hardcoded)
+- Internet access to `api.github.com` and to the GitHub release assets
+- ~1 GB of free space on `C:\` during installation (a 64-bit package is about 108 MB compressed)
 
-## Installation
+## Quick start
 
-1. Clone the repository:
+```bash
+git clone https://github.com/evandrodevbr/gcc-installer.git
+cd gcc-installer
+python -m pip install -r requirements.txt
+python main.py
+```
 
-2. Navigate to the project directory:
+`main.py` can also install its own dependencies (`requests`, `tqdm`, `watchdog`, `pywin32`) on first run when `pip` is available, but `requirements.txt` is the reproducible path.
 
-3. Install the required dependencies:
+On Linux the script is importable but exits on start with an explicit warning, since the installer is Windows-only:
 
+```
+$ python3 main.py          # Linux
+This installer is Windows-only: it installs MinGW-w64 into C:\mingw64, ...
+exit code: 1
+```
 
-## How to Use
+## Usage
 
-1. Run the program: python mingw_downloader.py
+| Button | What it does |
+|---|---|
+| Download Selected | Downloads the `.7z` of the selected row into `mingw_downloads\` (progress bar + log pane). |
+| Install MinGW | Requires the row to be `Downloaded`. Extracts and installs to `C:\mingw64`, then runs the `gcc`/`g++` check. |
+| Download and Install | Runs both steps in a single background thread. |
+| Remove Downloaded Version | Deletes the archive from `mingw_downloads\`. |
+| Refresh Versions | Fetches the release list from GitHub again. |
+| Add to PATH | Appends `C:\mingw64\bin` to the user PATH (`HKCU\Environment`). Open a new terminal afterwards. |
 
-2. **Download and Install MinGW**:
-- In the application window, you'll see a list of available MinGW versions.
-- Select a compatible version from the list (compatible versions are highlighted in green).
-- Click on the "Download and Install" button.
-- Wait for the download and installation process to complete.
-- After completion, you will see a folder called "temp_extract" in the application's working directory.
+The search box filters the table by version or file name, and the column headers sort it. Builds matching your architecture/exception model/CRT/thread model are highlighted in light green.
 
-3. **Add MinGW to PATH**:
-- Once you see the "temp_extract" folder, click the "Add to PATH" button in the application.
-- Confirm the addition when prompted.
+Installation steps performed on disk:
 
-4. **Verify the Installation**:
-- Open a new command prompt (important to open a new one to refresh the environment variables).
-- Type `gcc --version` and `g++ --version` to verify that MinGW was installed correctly and added to your PATH.
+1. `mingw_downloads\<file>.7z` (download)
+2. `C:\<file>.7z` (temporary copy)
+3. `C:\mingw_temp\<extracted folder>` (7-Zip extraction)
+4. `C:\mingw64` (existing folder is removed and replaced)
+5. archive removed from `C:\`; `mingw32-make.exe` renamed to `make.exe`
 
-## Troubleshooting
+## Tests and checks
 
-- If you encounter any issues during the download or installation process, check the application's log file for more detailed error messages.
-- Ensure that you have write permissions in the directory where you're running the application.
-- If MinGW is not recognized after adding it to PATH, try restarting your computer to ensure all environment variables are updated.
+There is no CI. The checks that exist are the ones you can run from the repository:
 
-## Contributing
+```bash
+python -m py_compile main.py                     # syntax
+ruff check main.py tests/                        # optional linter (ruff 0.6.9 used here)
+python -m unittest discover -s tests -v          # 13 tests, stdlib only
+SKIP_LIVE=1 python -m unittest discover -s tests -v   # skips the GitHub API test
+```
 
-Contributions to improve the MinGW Downloader and Installer are welcome. Please feel free to submit pull requests or create issues for bugs and feature requests.
+`tests/test_core.py` covers the pure logic (build compatibility, download folder, the download-then-install flow, the Windows-only guard) and one live test that validates the GitHub releases API contract the GUI depends on. It needs `requests` installed.
+
+## Current state and limitations
+
+- **Windows-only**: the GUI, the PATH change (`winreg`/`pywin32`), the `C:\mingw64` target and the 7-Zip extraction cannot be exercised on Linux. The GUI flow has not been run end-to-end on Windows in this revision; only the logic that is platform independent is covered by tests.
+- The 7-Zip path is hardcoded to `C:\Program Files\7-Zip\7z.exe`; a portable or non-default 7-Zip is not detected.
+- Only `ucrt` + `posix` thread model builds are highlighted as recommended. Upstream also ships `mcf` thread model and `msvcrt` builds, which are valid choices but are not auto-recommended here.
+- Releases up to about 12.2 have no `ucrt` (`seh`+`posix`) asset, so nothing is highlighted for them and you have to pick a build manually.
+- Installing into `C:\mingw64` deletes an existing `C:\mingw64` directory without confirmation.
+- Downloads are kept in `mingw_downloads\` next to the app (`mingw_downloader.log` holds the log); both are gitignored.
+- Some tkinter dialogs are still opened from worker threads (original design); it works in practice but is not the thread-safe pattern.
+- No packaged executable, no installer, no code signing.
+
+## Project structure
+
+```
+.
+├── main.py            application: GUI, download, install, PATH (single file)
+├── evandro.ico        window icon used by the GUI
+├── requirements.txt   runtime dependencies
+├── tests/
+│   └── test_core.py   unittest suite for the platform-independent logic
+├── LICENSE            MIT
+└── README.md
+```
+
+Directories created at runtime: `mingw_downloads/` (downloads) and `mingw_downloader.log`.
+
+## Documentation
+
+There are no extra docs: the application is a single file, `main.py`, and this README describes what it does. Code comments are in Portuguese in the older parts and English in the newer ones.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- Thanks to the MinGW-w64 project for providing the GCC port for Windows.
-- This project uses the GitHub API to fetch MinGW releases.
+MIT, see [`LICENSE`](LICENSE).
