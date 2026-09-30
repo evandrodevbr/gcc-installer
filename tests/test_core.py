@@ -1,6 +1,6 @@
 """Testes da lógica pura do gcc-installer.
 
-Rodam no Linux e no Windows, só com a biblioteca padrão (`unittest`):
+Rodam no Linux e no Windows com `unittest`, após instalar requirements.txt:
 
     python -m unittest discover -s tests -v
 
@@ -10,10 +10,12 @@ Essas partes só existem no Windows e não são verificáveis no Linux.
 """
 
 import os
+import glob
 import sys
 import tempfile
 import unittest
 from datetime import datetime
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -64,8 +66,18 @@ class PastaDeDownloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             app = make_app(download_folder=tmp)
             self.assertFalse(app.is_downloaded(ASSET_64))
-            open(os.path.join(tmp, ASSET_64), 'wb').close()
+            with open(os.path.join(tmp, ASSET_64), 'wb') as archive:
+                archive.write(b'archive bytes')
             self.assertTrue(app.is_downloaded(ASSET_64))
+
+    def test_arquivo_vazio_ou_parcial_nao_conta_como_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = make_app(download_folder=tmp)
+            open(os.path.join(tmp, ASSET_64), 'wb').close()
+            self.assertFalse(app.is_downloaded(ASSET_64))
+            with open(os.path.join(tmp, ASSET_64 + '.part'), 'wb') as partial:
+                partial.write(b'partial')
+            self.assertFalse(app.is_downloaded(ASSET_64))
 
     def test_find_download_url_acha_pela_versao_e_arquivo(self):
         app = make_app()
@@ -113,6 +125,106 @@ class DownloadEInstalacaoTests(unittest.TestCase):
         app = self._app(ja_baixado=True)
         app._download_then_install('16.2.0-rt_v14-rev1', ASSET_64, 'https://example.invalid/a.7z')
         self.assertEqual([chamada[0] for chamada in app.calls], ['install'])
+
+
+class TransferenciaTests(unittest.TestCase):
+    def download(self, chunks, declared_size=None):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        app = make_app(download_folder=folder.name, root=mock.Mock(), log_message=mock.Mock())
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.headers = {} if declared_size is None else {'content-length': str(declared_size)}
+        response.iter_content.return_value = chunks
+        progress = mock.MagicMock()
+        progress.__enter__.return_value = progress
+        progress.n = 3
+        with mock.patch.object(main.requests, 'get', return_value=response) as get, \
+                mock.patch.object(main, 'tqdm', return_value=progress), \
+                mock.patch.object(main, 'messagebox', new=mock.Mock()):
+            result = app._download_file(ASSET_64, 'https://example.invalid/archive.7z')
+        get.assert_called_once_with('https://example.invalid/archive.7z', stream=True, timeout=(10, 60))
+        self.assertEqual(glob.glob(os.path.join(folder.name, '*.part')), [])
+        return result, app, folder.name
+
+    def test_sem_content_length_baixa_sem_divisao_por_zero(self):
+        result, app, _ = self.download([b'abc'])
+        self.assertTrue(result)
+        self.assertTrue(app.is_downloaded(ASSET_64))
+
+    def test_resposta_vazia_e_rejeitada(self):
+        result, app, _ = self.download([])
+        self.assertFalse(result)
+        self.assertFalse(app.is_downloaded(ASSET_64))
+
+    def test_download_menor_que_content_length_nao_publica_arquivo(self):
+        result, app, _ = self.download([b'abc'], declared_size=6)
+        self.assertFalse(result)
+        self.assertFalse(app.is_downloaded(ASSET_64))
+
+    def test_falha_no_meio_da_transferencia_remove_arquivo_parcial(self):
+        def interrupted():
+            yield b'abc'
+            raise main.requests.ConnectionError('interrupted')
+        result, app, _ = self.download(interrupted(), declared_size=6)
+        self.assertFalse(result)
+        self.assertFalse(app.is_downloaded(ASSET_64))
+
+    def test_transfere_arquivo_inteiro(self):
+        result, app, folder = self.download([b'abc', b'def'], declared_size=6)
+        self.assertTrue(result)
+        self.assertTrue(app.is_downloaded(ASSET_64))
+        with open(os.path.join(folder, ASSET_64), 'rb') as archive:
+            self.assertEqual(archive.read(), b'abcdef')
+
+
+class TrocaDeToolchainTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.source = os.path.join(self.tmp.name, 'extracted')
+        self.target = os.path.join(self.tmp.name, 'installed')
+        os.makedirs(os.path.join(self.source, 'bin'))
+        os.makedirs(self.target)
+        for name in ('gcc.exe', 'g++.exe'):
+            with open(os.path.join(self.source, 'bin', name), 'wb') as executable:
+                executable.write(b'compiler fixture')
+        self.old = os.path.join(self.target, 'previous.txt')
+        with open(self.old, 'w') as previous:
+            previous.write('old installation')
+
+    def test_extracao_incompleta_preserva_instalacao_anterior(self):
+        os.remove(os.path.join(self.source, 'bin', 'g++.exe'))
+        with self.assertRaises(ValueError):
+            main.replace_toolchain(self.source, self.target)
+        self.assertTrue(os.path.isfile(self.old))
+
+    def test_falha_na_promocao_restaura_instalacao_anterior(self):
+        def partial_move(source, target):
+            os.makedirs(target)
+            with open(os.path.join(target, 'partial.txt'), 'w') as partial:
+                partial.write('incomplete replacement')
+            raise OSError('move failed')
+
+        with mock.patch.object(main.shutil, 'move', side_effect=partial_move), self.assertRaises(OSError):
+            main.replace_toolchain(self.source, self.target)
+        self.assertTrue(os.path.isfile(self.old))
+        self.assertFalse(os.path.exists(os.path.join(self.target, 'partial.txt')))
+        self.assertFalse(os.path.exists(self.target + '.backup'))
+
+    def test_backup_existente_e_preservado_para_recuperacao(self):
+        os.makedirs(self.target + '.backup')
+        with self.assertRaises(FileExistsError):
+            main.replace_toolchain(self.source, self.target)
+        self.assertTrue(os.path.isfile(self.old))
+        self.assertTrue(os.path.isdir(self.source))
+        self.assertTrue(os.path.isdir(self.target + '.backup'))
+
+    def test_promocao_bem_sucedida_remove_backup_apos_troca(self):
+        main.replace_toolchain(self.source, self.target)
+        self.assertTrue(os.path.isfile(os.path.join(self.target, 'bin', 'gcc.exe')))
+        self.assertFalse(os.path.exists(self.old))
+        self.assertFalse(os.path.exists(self.target + '.backup'))
 
 
 class GuardaDePlataformaTests(unittest.TestCase):
