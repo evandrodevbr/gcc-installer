@@ -104,11 +104,11 @@ There is no CI. The checks that exist are the ones you can run from the reposito
 ```bash
 python -m py_compile main.py                     # syntax
 ruff check main.py tests/                        # optional linter (ruff 0.6.9 used here)
-python -m unittest discover -s tests -v          # 13 tests, stdlib only
-SKIP_LIVE=1 python -m unittest discover -s tests -v   # skips the GitHub API test
+python -m unittest discover -s tests -v          # 23 tests; install requirements first
+SKIP_LIVE=1 python -m unittest discover -s tests -v   # skips the 2 GitHub API tests
 ```
 
-`tests/test_core.py` covers the pure logic (build compatibility, download folder, the download-then-install flow, the Windows-only guard) and one live test that validates the GitHub releases API contract the GUI depends on. It needs `requests` installed.
+`tests/test_core.py` covers build compatibility, download status, atomic transfers, toolchain replacement/rollback, the download-then-install flow and the Windows-only guard. Two live tests validate the GitHub releases API contract; set `SKIP_LIVE=1` for offline checks. Install `requirements.txt` before running the suite.
 
 ## Current state and limitations
 
@@ -116,7 +116,7 @@ SKIP_LIVE=1 python -m unittest discover -s tests -v   # skips the GitHub API tes
 - The 7-Zip path is hardcoded to `C:\Program Files\7-Zip\7z.exe`; a portable or non-default 7-Zip is not detected.
 - Only `ucrt` + `posix` thread model builds are highlighted as recommended. Upstream also ships `mcf` thread model and `msvcrt` builds, which are valid choices but are not auto-recommended here.
 - Releases up to about 12.2 have no `ucrt` (`seh`+`posix`) asset, so nothing is highlighted for them and you have to pick a build manually.
-- Installing into `C:\mingw64` deletes an existing `C:\mingw64` directory without confirmation.
+- Installing into `C:\mingw64` validates the extracted toolchain and keeps the previous directory as a backup until replacement succeeds; promotion failure restores it.
 - Downloads are kept in `mingw_downloads\` next to the app (`mingw_downloader.log` holds the log); both are gitignored.
 - Some tkinter dialogs are still opened from worker threads (original design); it works in practice but is not the thread-safe pattern.
 - No packaged executable, no installer, no code signing.
@@ -143,3 +143,11 @@ There are no extra docs: the application is a single file, `main.py`, and this R
 ## License
 
 MIT, see [`LICENSE`](LICENSE).
+
+## Download and replacement checks (2026-09-30)
+
+Transfers use unique `.part` files and publish the archive only after the stream completes and its size matches `Content-Length`, when supplied. A response without that header is supported; an empty response or interrupted stream is rejected. Requests have connection/read timeouts, and download notifications are dispatched through the Tk event loop.
+
+Extraction must contain one complete `bin/gcc.exe` and `bin/g++.exe` toolchain before replacing the installed directory. The previous directory is retained as `C:\mingw64.backup` until promotion succeeds and is restored if promotion fails. An existing backup is preserved for manual recovery.
+
+With requirements installed, `SKIP_LIVE=1 python -m unittest discover -s tests -v` runs 23 tests (21 pass, 2 network tests skipped). Temporary-directory tests cover incomplete archives, partial promotion failure, rollback and preservation of an existing backup. Windows GUI, registry/PATH, 7-Zip and live compiler execution still need Windows verification.

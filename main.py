@@ -10,6 +10,7 @@ from datetime import datetime
 import platform
 import webbrowser
 import threading
+import tempfile
 
 try:
     import tkinter as tk
@@ -45,6 +46,29 @@ except ImportError:
 # Lista de releases do projeto MinGW-w64 mantido por niXman, usada para montar a
 # tabela de versões disponíveis na GUI.
 GITHUB_RELEASES_API = "https://api.github.com/repos/niXman/mingw-builds-binaries/releases"
+
+
+def replace_toolchain(source_dir, target_dir):
+    """Promove uma extração validada e restaura a instalação anterior se falhar."""
+    for executable in ('gcc.exe', 'g++.exe'):
+        if not os.path.isfile(os.path.join(source_dir, 'bin', executable)):
+            raise ValueError(f"Extracted toolchain is missing {executable}")
+    backup_dir = target_dir + '.backup'
+    if os.path.lexists(backup_dir):
+        raise FileExistsError(f"Previous installation backup must be recovered first: {backup_dir}")
+    had_previous = os.path.exists(target_dir)
+    if had_previous:
+        os.replace(target_dir, backup_dir)
+    try:
+        shutil.move(source_dir, target_dir)
+    except Exception:
+        if had_previous:
+            if os.path.isdir(target_dir):
+                shutil.rmtree(target_dir)
+            os.replace(backup_dir, target_dir)
+        raise
+    if had_previous:
+        shutil.rmtree(backup_dir)
 
 
 def download_file(url, filename):
@@ -323,7 +347,8 @@ class MinGWDownloader:
         )
 
     def is_downloaded(self, filename):
-        return os.path.exists(os.path.join(self.download_folder, filename))
+        path = os.path.join(self.download_folder, filename)
+        return os.path.isfile(path) and os.path.getsize(path) > 0
 
     def find_download_url(self, version, filename):
         return next((v[4] for v in self.cached_versions if v[0] == version and v[1] == filename), None)
@@ -345,20 +370,23 @@ class MinGWDownloader:
 
     def _download_file(self, filename, download_url):
         """Baixa o arquivo. Retorna True em caso de sucesso (ou se já existe)."""
+        partial_path = None
         try:
             if self.is_downloaded(filename):
                 self.log_message(f"File {filename} is already downloaded")
-                messagebox.showinfo("Info", f"File {filename} is already downloaded")
+                self.root.after(0, messagebox.showinfo, "Info", f"File {filename} is already downloaded")
                 return True
 
             self.log_message(f"Starting download of {filename}")
             file_path = os.path.join(self.download_folder, filename)
+            descriptor, partial_path = tempfile.mkstemp(prefix=filename + '.', suffix='.part', dir=self.download_folder)
+            os.close(descriptor)
 
-            with requests.get(download_url, stream=True) as r:
+            with requests.get(download_url, stream=True, timeout=(10, 60)) as r:
                 r.raise_for_status()
                 total_size = int(r.headers.get('content-length', 0))
                 block_size = 8192
-                with open(file_path, 'wb') as f, tqdm(
+                with open(partial_path, 'wb') as f, tqdm(
                     desc=filename,
                     total=total_size,
                     unit='iB',
@@ -368,18 +396,26 @@ class MinGWDownloader:
                     for chunk in r.iter_content(chunk_size=block_size):
                         size = f.write(chunk)
                         progress_bar.update(size)
-                        self.root.after(0, self._update_progress, (progress_bar.n / total_size) * 100)
+                        if total_size > 0:
+                            self.root.after(0, self._update_progress, min(100, (progress_bar.n / total_size) * 100))
+
+            downloaded_size = os.path.getsize(partial_path)
+            if downloaded_size == 0 or (total_size > 0 and downloaded_size != total_size):
+                raise ValueError("Download is empty or incomplete")
+            os.replace(partial_path, file_path)
 
             self.log_message(f"Download complete: {file_path}")
             self.log_message(f"File size: {os.path.getsize(file_path)} bytes")
-            messagebox.showinfo("Success", f"Successfully downloaded {filename}")
+            self.root.after(0, messagebox.showinfo, "Success", f"Successfully downloaded {filename}")
             self.root.after(0, self.update_file_status, filename, "Downloaded")
             return True
         except Exception as e:
             self.log_message(f"Error downloading {filename}: {str(e)}")
-            messagebox.showerror("Error", f"Failed to download {filename}: {str(e)}")
+            self.root.after(0, messagebox.showerror, "Error", f"Failed to download {filename}: {str(e)}")
             return False
         finally:
+            if partial_path is not None and os.path.exists(partial_path):
+                os.remove(partial_path)
             self.root.after(0, self._reset_progress)
 
     def _install_mingw(self, version, filename):
@@ -418,12 +454,14 @@ class MinGWDownloader:
 
             self.log_message(f"Moving files to {target_dir}")
 
-            if os.path.exists(target_dir):
-                shutil.rmtree(target_dir, ignore_errors=True)
-                self.log_message(f"Removed existing directory: {target_dir}")
-
-            extracted_dir = os.path.join(temp_dir, os.listdir(temp_dir)[0])
-            shutil.move(extracted_dir, target_dir)
+            toolchains = [
+                os.path.join(temp_dir, name) for name in os.listdir(temp_dir)
+                if os.path.isfile(os.path.join(temp_dir, name, 'bin', 'gcc.exe'))
+                and os.path.isfile(os.path.join(temp_dir, name, 'bin', 'g++.exe'))
+            ]
+            if len(toolchains) != 1:
+                raise ValueError("Archive must contain exactly one complete GCC/G++ toolchain")
+            replace_toolchain(toolchains[0], target_dir)
             self.log_message(f"MinGW installed to {target_dir}")
 
             # Remove the .7z file from C: drive
@@ -434,7 +472,7 @@ class MinGWDownloader:
             self.rename_mingw32_make()
 
             self.log_message("Installation complete. You may need to add MinGW to your system PATH.")
-            messagebox.showinfo("Installation Complete", "MinGW has been successfully installed. You may need to add it to your system PATH.")
+            self.root.after(0, messagebox.showinfo, "Installation Complete", "MinGW has been successfully installed. You may need to add it to your system PATH.")
         except Exception as e:
             self.log_message(f"Error during installation: {str(e)}")
             if c_drive_file_path is not None:
@@ -442,7 +480,7 @@ class MinGWDownloader:
                 self.log_message(f"File exists: {os.path.exists(c_drive_file_path)}")
                 self.log_message(f"File size: {os.path.getsize(c_drive_file_path) if os.path.exists(c_drive_file_path) else 'N/A'}")
             self.log_message(f"Temp directory contents: {os.listdir(temp_dir) if os.path.exists(temp_dir) else 'N/A'}")
-            messagebox.showerror("Error", f"Failed to install MinGW: {str(e)}")
+            self.root.after(0, messagebox.showerror, "Error", f"Failed to install MinGW: {str(e)}")
         finally:
             self.clean_temp_directory(temp_dir)
 
